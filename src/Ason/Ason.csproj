@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -10,7 +10,7 @@
     <Description>High-performance ASON (Array-Schema Object Notation) encoder/decoder for .NET. Zero-copy binary, schema-driven text format.</Description>
     <RepositoryUrl>https://github.com/ason-lab/ason-cs</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>/ason-cs</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/ason-lab/ason-cs</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>ason;serialization;schema;llm;data-format</PackageTags>
     <Authors>ason contributors</Authors>
