@@ -16,7 +16,7 @@ JSON (100 tokens):
 {"users":[{"id":1,"name":"Alice","active":true},{"id":2,"name":"Bob","active":false}]}
 
 ASON (~35 tokens, 节省 65%):
-[{id:int, name:str, active:bool}]:(1,Alice,true),(2,Bob,false)
+[{id@int, name@str, active@bool}]:(1,Alice,true),(2,Bob,false)
 ```
 
 | 方面         | JSON         | ASON             |
@@ -35,6 +35,7 @@ ASON (~35 tokens, 节省 65%):
 
 ```bash
 dotnet add package Ason
+```
 
 发布出来的 NuGet 包是单包多目标，同时包含 `net8.0` 和 `net10.0` 资产。
 
@@ -48,7 +49,6 @@ dotnet add package Ason
 
 ```xml
 <TargetFramework>net10.0</TargetFramework>
-```
 ```
 
 ### 定义模式类型
@@ -64,7 +64,7 @@ record User(long Id, string Name, bool Active) : IAsonSchema
     public ReadOnlySpan<string?> FieldTypes => _types;
     public object?[] FieldValues => [Id, Name, Active];
 
-    public static User FromMap(Dictionary<string, object?> m) =>
+    public static User FromFields(Dictionary<string, object?> m) =>
         new(Convert.ToInt64(m["id"]), (string)m["name"]!, Convert.ToBoolean(m["active"]));
 }
 ```
@@ -80,10 +80,10 @@ var s = Ason.Ason.encode(user);
 
 // 带类型注解编码
 var typed = Ason.Ason.encodeTyped(user);
-// => "{id:int,name:str,active:bool}:(1,Alice,true)"
+// => "{id@int,name@str,active@bool}:(1,Alice,true)"
 
 // 解码
-var u2 = Ason.Ason.decodeWith(s, User.FromMap);
+var u2 = Ason.Ason.decodeWith(s, User.FromFields);
 // u2 == user ✓
 ```
 
@@ -100,7 +100,7 @@ var users = new List<User> {
 var s = Ason.Ason.encode<User>(users);
 // => "[{id,name,active}]:(1,Alice,true),(2,Bob,false)"
 
-var users2 = Ason.Ason.decodeListWith(s, User.FromMap);
+var users2 = Ason.Ason.decodeListWith(s, User.FromFields);
 // users2.Count == 2 ✓
 ```
 
@@ -113,7 +113,7 @@ var bin = Ason.Ason.encodeBinary(user);
 var u3 = Ason.Ason.decodeBinaryWith(bin,
     new[] { "id", "name", "active" },
     new[] { FieldType.Int, FieldType.String, FieldType.Bool },
-    User.FromMap);
+    User.FromFields);
 ```
 
 ### 美化格式
@@ -123,7 +123,7 @@ var pretty = Ason.Ason.encodePretty(user);
 // => "{id, name, active}:(1, Alice, true)"
 
 var prettyTyped = Ason.Ason.encodePrettyTyped(user);
-// => "{id:int, name:str, active:bool}:(1, Alice, true)"
+// => "{id@int, name@str, active@bool}:(1, Alice, true)"
 ```
 
 ## 支持的类型
@@ -138,6 +138,13 @@ var prettyTyped = Ason.Ason.encodePrettyTyped(user);
 | List\<T\>     | `[v1,v2,v3]`          | `[rust,go,python]`     |
 | 嵌套结构      | `(field1,field2)`      | `(Engineering,500000)` |
 
+当前 ASON 格式刻意不支持原生 `Dictionary<K,V>` / map 字段。
+如果你需要键值集合，请显式建模成 entry-list 数组，例如：
+
+```text
+{attrs@[{key@str,value@int}]}:([(age,30),(score,95)])
+```
+
 ### 嵌套结构
 
 ```csharp
@@ -145,7 +152,7 @@ record Dept(string Title) : IAsonSchema { /* ... */ }
 record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 
 // 模式反映嵌套关系：
-// {name:str,dept:{title:str}}:(Alice,(Engineering))
+// {name@str,dept@{title@str}}:(Alice,(Engineering))
 ```
 
 ### 可选字段
@@ -165,13 +172,13 @@ record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 
 ```text
 /* 用户列表 */
-[{id:int, name:str, active:bool}]:(1,Alice,true),(2,Bob,false)
+[{id@int, name@str, active@bool}]:(1,Alice,true),(2,Bob,false)
 ```
 
 ### 多行格式
 
 ```text
-[{id:int, name:str, active:bool}]:
+[{id@int, name@str, active@bool}]:
   (1, Alice, true),
   (2, Bob, false),
   (3, "Carol Smith", true)
@@ -185,7 +192,7 @@ record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 | `Ason.encodeTyped(T)`            | 序列化结构体 → 带类型注解模式     |
 | `Ason.encode<T>(List<T>)`        | 序列化列表 → 模式只写一次        |
 | `Ason.encodeTyped<T>(List<T>)`   | 序列化列表 → 带注解模式          |
-| `Ason.decode(string)`            | 反序列化 → Dictionary            |
+| `Ason.decode(string)`            | 反序列化 → 字段袋（`Dictionary<string, object?>`） |
 | `Ason.decodeWith<T>(s, fn)`      | 反序列化 → 通过工厂函数生成 T    |
 | `Ason.decodeListWith<T>(s, fn)`  | 反序列化 → List\<T\>             |
 | `Ason.encodeBinary(T)`           | 二进制编码（零拷贝 BinaryPrimitives）|
@@ -193,21 +200,23 @@ record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 | `Ason.encodePretty(T)`           | 美化格式编码                      |
 | `Ason.encodePrettyTyped(T)`      | 美化格式 + 类型注解               |
 
-## Latest Benchmarks
+## Bench 输出
 
-在当前机器上通过下面命令实测：
+通过下面命令运行自带 benchmark：
 
 ```bash
-dotnet run --project examples/Bench/Ason.Examples.Bench.csproj -c Release
+dotnet run --project examples/Bench/Ason.Examples.Bench.csproj -c Release -f net10.0
 ```
 
 关键结果：
 
-- 扁平 1,000 条记录：ASON 文本序列化 `329.84ms`，JSON `842.31ms`；反序列化 ASON `298.01ms`，JSON `841.81ms`
-- 扁平 10,000 条记录：ASON 文本序列化 `117.54ms`，JSON `280.08ms`；反序列化 ASON `513.51ms`，JSON `741.79ms`
-- 深层 100 条 company 数据：ASON 文本序列化 `293.55ms`，JSON `1253.94ms`；反序列化 ASON `1094.74ms`，JSON `2535.20ms`
-- 1,000 条扁平记录体积：JSON `121,675 B`，ASON 文本 `56,718 B`（缩小 `53%`），ASON 二进制 `74,454 B`（缩小 `39%`）
-- 这轮测试里 ASON 二进制是最快的序列化路径：扁平 1,000 条时 `94.51ms`，而 JSON 为 `842.31ms`
+```text
+  Flat struct × 500 (8 fields, vec)
+    Serialize:   JSON 16.22ms/60784B | ASON 10.11ms(1.6x)/28327B(46.6%) | BIN 4.92ms(3.3x)/37230B(61.2%)
+    Deserialize: JSON    22.09ms | ASON     5.70ms(3.9x) | BIN     2.11ms(10.5x)
+```
+
+具体耗时会随运行时、CPU、以及 `Debug/Release` 模式而变化。
 
 ## 为什么 ASON 表现更好？
 
@@ -237,13 +246,13 @@ dotnet run --project examples/Bench/Ason.Examples.Bench.csproj -c Release
 
 ```bash
 # 基本用法
-dotnet run --project examples/Basic
+dotnet run --project examples/Basic -f net10.0
 
 # 复杂嵌套结构、转义、5层深度嵌套
-dotnet run --project examples/Complex
+dotnet run --project examples/Complex -f net10.0
 
 # 性能基准测试（ASON vs JSON）
-dotnet run --project examples/Bench -c Release
+dotnet run --project examples/Bench -c Release -f net10.0
 ```
 
 如果你本地同时启用了多个目标框架，也可以显式指定：
@@ -261,10 +270,10 @@ dotnet run --project examples/Basic -f net10.0
 
 | 元素     | 模式                        | 数据                |
 | -------- | --------------------------- | ------------------- |
-| 对象     | `{field1:type,field2:type}` | `(val1,val2)`       |
-| 数组     | `field:[type]`              | `[v1,v2,v3]`        |
-| 对象数组 | `field:[{f1:type,f2:type}]` | `[(v1,v2),(v3,v4)]` |
-| 嵌套对象 | `field:{f1:type,f2:type}`   | `(v1,(v3,v4))`      |
+| 对象     | `{field1@type,field2@type}` | `(val1,val2)`       |
+| 数组     | `field@[type]`              | `[v1,v2,v3]`        |
+| 对象数组 | `field@[{f1@type,f2@type}]` | `[(v1,v2),(v3,v4)]` |
+| 嵌套对象 | `field@{f1@type,f2@type}`   | `(v1,(v3,v4))`      |
 | 空值     | —                           | _(空白)_            |
 | 空字符串 | —                           | `""`                |
 | 注释     | —                           | `/* ... */`         |

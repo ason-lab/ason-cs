@@ -5,13 +5,13 @@ Console.WriteLine("=== ASON C# Complex Examples ===\n");
 
 // 1. Nested struct
 Console.WriteLine("1. Nested struct:");
-var emp = Decoder.DecodeWith("{id,name,dept:{title},active}:(1,Alice,(Manager),true)", CEmployee.FromMap);
+var emp = Decoder.DecodeWith("{id,name,dept@{title},active}:(1,Alice,(Manager),true)", CEmployee.FromFields);
 Console.WriteLine($"   {emp}\n");
 
 // 2. Vec with nested structs
 Console.WriteLine("2. Vec with nested structs:");
-var input = "[{id:int,name:str,dept:{title:str},active:bool}]:\n  (1, Alice, (Manager), true),\n  (2, Bob, (Engineer), false),\n  (3, \"Carol Smith\", (Director), true)";
-var employees = Decoder.DecodeListWith(input, CEmployee.FromMap);
+var input = "[{id@int,name@str,dept@{title@str},active@bool}]:\n  (1, Alice, (Manager), true),\n  (2, Bob, (Engineer), false),\n  (3, \"Carol Smith\", (Director), true)";
+var employees = Decoder.DecodeListWith(input, CEmployee.FromFields);
 foreach (var e in employees) Console.WriteLine($"   {e}");
 
 // 3. Nested struct roundtrip
@@ -19,7 +19,7 @@ Console.WriteLine("\n3. Nested struct roundtrip:");
 var nested = new CNested("Alice", new CAddress("NYC", 10001));
 var s = A.encode(nested);
 Console.WriteLine($"   serialized: {s}");
-var n2 = Decoder.DecodeWith(s, CNested.FromMap);
+var n2 = Decoder.DecodeWith(s, CNested.FromFields);
 Console.WriteLine("   ✓ roundtrip OK");
 
 // 4. Escaped strings
@@ -27,7 +27,7 @@ Console.WriteLine("\n4. Escaped strings:");
 var note = new CNote("say \"hi\", then (wave)\nnewline");
 s = A.encode(note);
 Console.WriteLine($"   serialized: {s}");
-var note2 = Decoder.DecodeWith(s, CNote.FromMap);
+var note2 = Decoder.DecodeWith(s, CNote.FromFields);
 Console.WriteLine("   ✓ escape roundtrip OK");
 
 // 5. Float fields
@@ -35,7 +35,7 @@ Console.WriteLine("\n5. Float fields:");
 var m = new CMeasurement(2, 95.0, "score");
 s = A.encode(m);
 Console.WriteLine($"   serialized: {s}");
-var m2 = Decoder.DecodeWith(s, CMeasurement.FromMap);
+var m2 = Decoder.DecodeWith(s, CMeasurement.FromFields);
 Console.WriteLine("   ✓ float roundtrip OK");
 
 // 6. Negative numbers
@@ -43,7 +43,7 @@ Console.WriteLine("\n6. Negative numbers:");
 var n = new CNums(-42, -3.15, -9223372036854775806);
 s = A.encode(n);
 Console.WriteLine($"   serialized: {s}");
-var n3 = Decoder.DecodeWith(s, CNums.FromMap);
+var n3 = Decoder.DecodeWith(s, CNums.FromFields);
 Console.WriteLine("   ✓ negative roundtrip OK");
 
 // 7. 5-level deep struct
@@ -83,7 +83,8 @@ record CDept(string Title) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [Title];
-    public static CDept FromMap(Dictionary<string, object?> m) => new((string)m["title"]!);
+    public static CDept FromFields(Dictionary<string, object?> m) => new((string)m["title"]!);
+    public override string ToString() => $"Department{{title={Title}}}";
 }
 
 record CEmployee(long Id, string Name, CDept Dept, bool Active) : IAsonSchema
@@ -93,7 +94,7 @@ record CEmployee(long Id, string Name, CDept Dept, bool Active) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [Id, Name, Dept, Active];
-    public static CEmployee FromMap(Dictionary<string, object?> m)
+    public static CEmployee FromFields(Dictionary<string, object?> m)
     {
         var d = m["dept"];
         CDept dept;
@@ -101,6 +102,7 @@ record CEmployee(long Id, string Name, CDept Dept, bool Active) : IAsonSchema
         else dept = new CDept(d?.ToString() ?? "");
         return new CEmployee(Convert.ToInt64(m["id"]), (string)m["name"]!, dept, Convert.ToBoolean(m["active"]));
     }
+    public override string ToString() => $"Employee{{id={Id}, name={Name}, dept={Dept}, active={Active}}}";
 }
 
 record CAddress(string City, long Zip) : IAsonSchema
@@ -110,7 +112,7 @@ record CAddress(string City, long Zip) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [City, Zip];
-    public static CAddress FromMap(Dictionary<string, object?> m) =>
+    public static CAddress FromFields(Dictionary<string, object?> m) =>
         new((string)m["city"]!, Convert.ToInt64(m["zip"]));
 }
 
@@ -121,7 +123,7 @@ record CNested(string Name, CAddress Addr) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [Name, Addr];
-    public static CNested FromMap(Dictionary<string, object?> m)
+    public static CNested FromFields(Dictionary<string, object?> m)
     {
         var a = m["addr"];
         CAddress addr;
@@ -138,7 +140,7 @@ record CNote(string Text) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [Text];
-    public static CNote FromMap(Dictionary<string, object?> m) => new((string)m["text"]!);
+    public static CNote FromFields(Dictionary<string, object?> m) => new((string)m["text"]!);
 }
 
 record CMeasurement(long Id, double Value, string Label) : IAsonSchema
@@ -148,7 +150,7 @@ record CMeasurement(long Id, double Value, string Label) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [Id, Value, Label];
-    public static CMeasurement FromMap(Dictionary<string, object?> m) =>
+    public static CMeasurement FromFields(Dictionary<string, object?> m) =>
         new(Convert.ToInt64(m["id"]), Convert.ToDouble(m["value"]), (string)m["label"]!);
 }
 
@@ -159,7 +161,7 @@ record CNums(long A, double B, long C) : IAsonSchema
     public ReadOnlySpan<string> FieldNames => _n;
     public ReadOnlySpan<string?> FieldTypes => _t;
     public object?[] FieldValues => [A, B, C];
-    public static CNums FromMap(Dictionary<string, object?> m) =>
+    public static CNums FromFields(Dictionary<string, object?> m) =>
         new(Convert.ToInt64(m["a"]), Convert.ToDouble(m["b"]), Convert.ToInt64(m["c"]));
 }
 

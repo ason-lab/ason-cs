@@ -12,7 +12,7 @@ public static class Decoder
     // Cache parsed schema field names to avoid re-parsing identical schema headers
     private static readonly ConcurrentDictionary<int, string[]> _schemaCache = new();
 
-    /// <summary>Decode ASON text into a Map (Dictionary&lt;string, object?&gt;).</summary>
+    /// <summary>Decode ASON text into a field bag (Dictionary&lt;string, object?&gt;).</summary>
     public static Dictionary<string, object?> Decode(ReadOnlySpan<char> input)
     {
         var d = new AsonDecoder(input, _schemaCache);
@@ -37,7 +37,7 @@ public static class Decoder
         return factory(Decode(input));
     }
 
-    /// <summary>Decode ASON text into a list of maps.</summary>
+    /// <summary>Decode ASON text into a list of field bags.</summary>
     public static List<Dictionary<string, object?>> DecodeList(ReadOnlySpan<char> input)
     {
         var d = new AsonDecoder(input, _schemaCache);
@@ -151,8 +151,8 @@ internal ref struct AsonDecoder
             string name = _input[start..Pos].ToString();
             SkipWs();
 
-            // Skip optional type annotation
-            if (Pos < Len && _input[Pos] == ':')
+            // Skip optional type annotation / structural marker
+            if (Pos < Len && _input[Pos] == '@')
             {
                 Pos++;
                 SkipWs();
@@ -161,11 +161,6 @@ internal ref struct AsonDecoder
                     char tc = _input[Pos];
                     if (tc == '{') SkipBalanced('{', '}');
                     else if (tc == '[') SkipBalanced('[', ']');
-                    else if (Pos + 3 <= Len && _input.Slice(Pos, 3).SequenceEqual("map"))
-                    {
-                        Pos += 3;
-                        if (Pos < Len && _input[Pos] == '[') SkipBalanced('[', ']');
-                    }
                     else
                     {
                         while (Pos < Len)
@@ -341,6 +336,7 @@ internal ref struct AsonDecoder
         {
             case '(': SkipBalanced('(', ')'); break;
             case '[': SkipBalanced('[', ']'); break;
+            case '<': throw AsonException.UnsupportedMap;
             case '"':
                 Pos++;
                 while (Pos < Len)
@@ -383,6 +379,7 @@ internal ref struct AsonDecoder
 
         if (c == '(') return ParseTupleValue();
         if (c == '[') return ParseArray();
+        if (c == '<') throw AsonException.UnsupportedMap;
         if (c == '{') return ParseSingleStruct();
         return ParsePlainValue();
     }

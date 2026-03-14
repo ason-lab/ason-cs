@@ -184,6 +184,8 @@ public struct AsonWriter : IDisposable
             case float f: WriteDouble(f); break;
             case double d: WriteDouble(d); break;
             case string s: WriteString(s); break;
+            case System.Collections.IDictionary:
+                throw AsonException.UnsupportedMap;
             case IAsonSchema schema:
                 WriteChar('(');
                 schema.WriteValues(ref this);

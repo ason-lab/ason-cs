@@ -38,6 +38,8 @@ public static class BinaryCodec
             case float f: w.WriteF64(f); break;
             case double d: w.WriteF64(d); break;
             case string s: w.WriteString(s); break;
+            case System.Collections.IDictionary:
+                throw AsonException.UnsupportedMap;
             case IAsonSchema schema:
                 schema.WriteBinaryValues(ref w);
                 break;

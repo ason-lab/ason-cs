@@ -123,7 +123,7 @@ public static class Encoder
     private static void WriteSchemaHeader(ref AsonWriter w, IAsonSchema obj, bool typed)
     {
         var names = obj.FieldNames;
-        var types = typed ? obj.FieldTypes : ReadOnlySpan<string?>.Empty;
+        var types = obj.FieldTypes;
         var values = obj.FieldValues; // only for nested type detection in header build
 
         w.WriteChar('{');
@@ -133,21 +133,25 @@ public static class Encoder
             w.WriteSpan(names[i]);
 
             var v = i < values.Length ? values[i] : null;
+            if (v is System.Collections.IDictionary) throw AsonException.UnsupportedMap;
             if (v is IAsonSchema nested)
             {
-                w.WriteChar(':');
+                w.WriteChar('@');
                 WriteNestedSchemaHeader(ref w, nested, typed);
             }
             else if (v is System.Collections.IList list && list.Count > 0 && list[0] is IAsonSchema firstSchema)
             {
-                w.WriteSpan(":[");
+                w.WriteSpan("@[");
                 WriteNestedSchemaHeader(ref w, firstSchema, typed);
                 w.WriteChar(']');
             }
-            else if (typed && i < types.Length && types[i] != null)
+            else if (v is System.Collections.IList scalarList)
             {
-                w.WriteChar(':');
-                w.WriteSpan(types[i]!);
+                WriteArrayTypeHeader(ref w, scalarList, i < types.Length ? types[i] : null, typed);
+            }
+            else if (i < types.Length && types[i] is string fieldType)
+            {
+                WriteDeclaredTypeHeader(ref w, fieldType, typed);
             }
         }
     }
@@ -155,7 +159,7 @@ public static class Encoder
     private static void WriteNestedSchemaHeader(ref AsonWriter w, IAsonSchema obj, bool typed)
     {
         var names = obj.FieldNames;
-        var types = typed ? obj.FieldTypes : ReadOnlySpan<string?>.Empty;
+        var types = obj.FieldTypes;
         var values = obj.FieldValues;
 
         w.WriteChar('{');
@@ -165,18 +169,71 @@ public static class Encoder
             w.WriteSpan(names[i]);
 
             var v = i < values.Length ? values[i] : null;
+            if (v is System.Collections.IDictionary) throw AsonException.UnsupportedMap;
             if (v is IAsonSchema nested)
             {
-                w.WriteChar(':');
+                w.WriteChar('@');
                 WriteNestedSchemaHeader(ref w, nested, typed);
             }
-            else if (typed && i < types.Length && types[i] != null)
+            else if (v is System.Collections.IList scalarList)
             {
-                w.WriteChar(':');
-                w.WriteSpan(types[i]!);
+                WriteArrayTypeHeader(ref w, scalarList, i < types.Length ? types[i] : null, typed);
+            }
+            else if (i < types.Length && types[i] is string fieldType)
+            {
+                WriteDeclaredTypeHeader(ref w, fieldType, typed);
             }
         }
         w.WriteChar('}');
+    }
+
+    private static void WriteDeclaredTypeHeader(ref AsonWriter w, string fieldType, bool typed)
+    {
+        if (fieldType.Length == 0) return;
+        bool isComplex = fieldType[0] == '{' || fieldType[0] == '[';
+        if (!typed && !isComplex) return;
+        w.WriteChar('@');
+        w.WriteSpan(fieldType);
+    }
+
+    private static void WriteArrayTypeHeader(ref AsonWriter w, System.Collections.IList list, string? fieldType, bool typed)
+    {
+        w.WriteSpan("@[");
+
+        if (list.Count > 0)
+        {
+            if (list[0] is System.Collections.IDictionary) throw AsonException.UnsupportedMap;
+            if (list[0] is not IAsonSchema && typed)
+            {
+                var elemType = InferScalarType(list[0]);
+                if (elemType is not null) w.WriteSpan(elemType);
+            }
+        }
+        else if (fieldType is not null)
+        {
+            if (fieldType.StartsWith('[') && fieldType.EndsWith(']'))
+            {
+                w.WriteSpan(fieldType.AsSpan(1, fieldType.Length - 2));
+            }
+            else if (typed)
+            {
+                w.WriteSpan(fieldType);
+            }
+        }
+
+        w.WriteChar(']');
+    }
+
+    private static string? InferScalarType(object? value)
+    {
+        return value switch
+        {
+            bool => AsonType.Bool,
+            int or long => AsonType.Int,
+            float or double => AsonType.Float,
+            string => AsonType.Str,
+            _ => null,
+        };
     }
 
     // Legacy entry points for internal use (PrettyPrinter etc.)

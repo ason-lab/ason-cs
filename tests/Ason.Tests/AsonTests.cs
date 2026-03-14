@@ -12,7 +12,7 @@ public record User(long Id, string Name, bool Active) : IAsonSchema
     public ReadOnlySpan<string?> FieldTypes => _types;
     public object?[] FieldValues => [Id, Name, Active];
 
-    public static User FromMap(Dictionary<string, object?> m) => new(
+    public static User FromFields(Dictionary<string, object?> m) => new(
         Convert.ToInt64(m["id"]), (string)m["name"]!, Convert.ToBoolean(m["active"]));
 }
 
@@ -24,7 +24,7 @@ public record Dept(string Title) : IAsonSchema
     public ReadOnlySpan<string?> FieldTypes => _types;
     public object?[] FieldValues => [Title];
 
-    public static Dept FromMap(Dictionary<string, object?> m) => new((string)m["title"]!);
+    public static Dept FromFields(Dictionary<string, object?> m) => new((string)m["title"]!);
 }
 
 public record Employee(string Name, Dept Dept, bool Active) : IAsonSchema
@@ -35,11 +35,11 @@ public record Employee(string Name, Dept Dept, bool Active) : IAsonSchema
     public ReadOnlySpan<string?> FieldTypes => _types;
     public object?[] FieldValues => [Name, Dept, Active];
 
-    public static Employee FromMap(Dictionary<string, object?> m)
+    public static Employee FromFields(Dictionary<string, object?> m)
     {
         var d = m["dept"];
         Dept dept;
-        if (d is Dictionary<string, object?> dm) dept = Dept.FromMap(dm);
+        if (d is Dictionary<string, object?> dm) dept = Dept.FromFields(dm);
         else if (d is List<object?> list) dept = new Dept(list[0]?.ToString() ?? "");
         else dept = new Dept(d?.ToString() ?? "");
         return new Employee((string)m["name"]!, dept, Convert.ToBoolean(m["active"]));
@@ -59,7 +59,7 @@ public class EncodeTests
     public void SingleStructTyped()
     {
         var u = new User(1, "Alice", true);
-        Assert.Equal("{id:int,name:str,active:bool}:(1,Alice,true)", Encoder.EncodeTyped(u));
+        Assert.Equal("{id@int,name@str,active@bool}:(1,Alice,true)", Encoder.EncodeTyped(u));
     }
 
     [Fact]
@@ -73,21 +73,21 @@ public class EncodeTests
     public void VecTyped()
     {
         var users = new List<User> { new(1, "Alice", true), new(2, "Bob", false) };
-        Assert.Equal("[{id:int,name:str,active:bool}]:(1,Alice,true),(2,Bob,false)", Encoder.EncodeTyped<User>(users));
+        Assert.Equal("[{id@int,name@str,active@bool}]:(1,Alice,true),(2,Bob,false)", Encoder.EncodeTyped<User>(users));
     }
 
     [Fact]
     public void NestedStruct()
     {
         var e = new Employee("Alice", new Dept("Engineering"), true);
-        Assert.Equal("{name,dept:{title},active}:(Alice,(Engineering),true)", Encoder.Encode(e));
+        Assert.Equal("{name,dept@{title},active}:(Alice,(Engineering),true)", Encoder.Encode(e));
     }
 
     [Fact]
     public void NestedStructTyped()
     {
         var e = new Employee("Alice", new Dept("Engineering"), true);
-        Assert.Equal("{name:str,dept:{title:str},active:bool}:(Alice,(Engineering),true)", Encoder.EncodeTyped(e));
+        Assert.Equal("{name@str,dept@{title@str},active@bool}:(Alice,(Engineering),true)", Encoder.EncodeTyped(e));
     }
 
     [Fact]
@@ -106,6 +106,13 @@ public class EncodeTests
         Assert.Contains("-42", result);
         Assert.Contains("-3.15", result);
     }
+
+    [Fact]
+    public void LegacyMapFieldIsRejected()
+    {
+        var legacy = new LegacyMapHolder(new Dictionary<string, object?> { ["age"] = 30L });
+        Assert.Throws<AsonException>(() => Encoder.Encode(legacy));
+    }
 }
 
 public record NumStruct(long A, double B) : IAsonSchema
@@ -117,36 +124,45 @@ public record NumStruct(long A, double B) : IAsonSchema
     public object?[] FieldValues => [(object)A, (object)B];
 }
 
+public record LegacyMapHolder(Dictionary<string, object?> Attrs) : IAsonSchema
+{
+    private static readonly string[] _names = ["attrs"];
+    private static readonly string?[] _types = [null];
+    public ReadOnlySpan<string> FieldNames => _names;
+    public ReadOnlySpan<string?> FieldTypes => _types;
+    public object?[] FieldValues => [Attrs];
+}
+
 public record MatrixPart(long Id, double Score)
 {
-    public static MatrixPart FromMap(Dictionary<string, object?> m) => new(
+    public static MatrixPart FromFields(Dictionary<string, object?> m) => new(
         Convert.ToInt64(m["id"]),
         Convert.ToDouble(m["score"]));
 }
 
 public record MatrixNoOverlap(long Foo, string? Bar)
 {
-    public static MatrixNoOverlap FromMap(Dictionary<string, object?> m) => new(
+    public static MatrixNoOverlap FromFields(Dictionary<string, object?> m) => new(
         m.TryGetValue("foo", out var foo) && foo is not null ? Convert.ToInt64(foo) : 0L,
         m.TryGetValue("bar", out var bar) ? bar as string : null);
 }
 
 public record MatrixNestedOptional(string Name, string? Nick)
 {
-    public static MatrixNestedOptional FromMap(Dictionary<string, object?> m) => new(
+    public static MatrixNestedOptional FromFields(Dictionary<string, object?> m) => new(
         (string)m["name"]!,
         m.TryGetValue("nick", out var nick) ? nick as string : null);
 }
 
 public record MatrixUserNestedOptional(long Id, MatrixNestedOptional Profile)
 {
-    public static MatrixUserNestedOptional FromMap(Dictionary<string, object?> m)
+    public static MatrixUserNestedOptional FromFields(Dictionary<string, object?> m)
     {
         var p = m["profile"];
         MatrixNestedOptional profile;
         if (p is Dictionary<string, object?> pm)
         {
-            profile = MatrixNestedOptional.FromMap(pm);
+            profile = MatrixNestedOptional.FromFields(pm);
         }
         else if (p is List<object?> list)
         {
@@ -167,7 +183,7 @@ public class DecodeTests
     [Fact]
     public void SingleStruct()
     {
-        var u = Decoder.DecodeWith("{id,name,active}:(1,Alice,true)", User.FromMap);
+        var u = Decoder.DecodeWith("{id,name,active}:(1,Alice,true)", User.FromFields);
         Assert.Equal(1L, u.Id);
         Assert.Equal("Alice", u.Name);
         Assert.True(u.Active);
@@ -176,7 +192,7 @@ public class DecodeTests
     [Fact]
     public void TypedSchema()
     {
-        var u = Decoder.DecodeWith("{id:int,name:str,active:bool}:(1,Alice,true)", User.FromMap);
+        var u = Decoder.DecodeWith("{id@int,name@str,active@bool}:(1,Alice,true)", User.FromFields);
         Assert.Equal(1L, u.Id);
         Assert.Equal("Alice", u.Name);
         Assert.True(u.Active);
@@ -185,7 +201,7 @@ public class DecodeTests
     [Fact]
     public void VecOfStructs()
     {
-        var users = Decoder.DecodeListWith("[{id,name,active}]:(1,Alice,true),(2,Bob,false)", User.FromMap);
+        var users = Decoder.DecodeListWith("[{id,name,active}]:(1,Alice,true),(2,Bob,false)", User.FromFields);
         Assert.Equal(2, users.Count);
         Assert.Equal("Alice", users[0].Name);
         Assert.Equal("Bob", users[1].Name);
@@ -195,14 +211,14 @@ public class DecodeTests
     public void Multiline()
     {
         var users = Decoder.DecodeListWith(
-            "[{id:int,name:str,active:bool}]:\n  (1, Alice, true),\n  (2, Bob, false)", User.FromMap);
+            "[{id@int,name@str,active@bool}]:\n  (1, Alice, true),\n  (2, Bob, false)", User.FromFields);
         Assert.Equal(2, users.Count);
     }
 
     [Fact]
     public void QuotedString()
     {
-        var u = Decoder.DecodeWith("{id,name,active}:(1,\"Carol Smith\",true)", User.FromMap);
+        var u = Decoder.DecodeWith("{id,name,active}:(1,\"Carol Smith\",true)", User.FromFields);
         Assert.Equal("Carol Smith", u.Name);
     }
 
@@ -235,7 +251,7 @@ public class DecodeTests
     [Fact]
     public void NestedStruct()
     {
-        var m = Decoder.Decode("{name,dept:{title}}:(Alice,(Manager))");
+        var m = Decoder.Decode("{name,dept@{title}}:(Alice,(Manager))");
         Assert.Equal("Alice", m["name"]);
     }
 
@@ -265,7 +281,7 @@ public class DecodeTests
     public void TrailingComma()
     {
         var users = Decoder.DecodeListWith(
-            "[{id,name,active}]:(1,Alice,true),(2,Bob,false),", User.FromMap);
+            "[{id,name,active}]:(1,Alice,true),(2,Bob,false),", User.FromFields);
         Assert.Equal(2, users.Count);
     }
 
@@ -273,8 +289,8 @@ public class DecodeTests
     public void MatrixP1TypedPartialOverlap()
     {
         var dst = Decoder.DecodeWith(
-            "{id:int,name:str,score:float,active:bool}:(42,Alice,9.5,true)",
-            MatrixPart.FromMap);
+            "{id@int,name@str,score@float,active@bool}:(42,Alice,9.5,true)",
+            MatrixPart.FromFields);
         Assert.Equal(42L, dst.Id);
         Assert.Equal(9.5, dst.Score);
     }
@@ -284,7 +300,7 @@ public class DecodeTests
     {
         var dst = Decoder.DecodeWith(
             "{id,name,score,active}:(42,Alice,9.5,true)",
-            MatrixPart.FromMap);
+            MatrixPart.FromFields);
         Assert.Equal(42L, dst.Id);
         Assert.Equal(9.5, dst.Score);
     }
@@ -293,8 +309,8 @@ public class DecodeTests
     public void MatrixP2TypedNoOverlapDefaults()
     {
         var dst = Decoder.DecodeWith(
-            "{id:int,name:str}:(42,Alice)",
-            MatrixNoOverlap.FromMap);
+            "{id@int,name@str}:(42,Alice)",
+            MatrixNoOverlap.FromFields);
         Assert.Equal(0L, dst.Foo);
         Assert.Null(dst.Bar);
     }
@@ -304,7 +320,7 @@ public class DecodeTests
     {
         var dst = Decoder.DecodeWith(
             "{id,name}:(42,Alice)",
-            MatrixNoOverlap.FromMap);
+            MatrixNoOverlap.FromFields);
         Assert.Equal(0L, dst.Foo);
         Assert.Null(dst.Bar);
     }
@@ -313,8 +329,8 @@ public class DecodeTests
     public void MatrixN4TypedNestedOptionalSubset()
     {
         var dst = Decoder.DecodeListWith(
-            "[{id:int,profile:{name:str,nick:str?,score:float?},active:bool}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)",
-            MatrixUserNestedOptional.FromMap);
+            "[{id@int,profile@{name@str,nick@str?,score@float?},active@bool}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)",
+            MatrixUserNestedOptional.FromFields);
         Assert.Equal(2, dst.Count);
         Assert.Equal("Alice", dst[0].Profile.Name);
         Assert.Equal("ally", dst[0].Profile.Nick);
@@ -326,11 +342,17 @@ public class DecodeTests
     public void MatrixN4UntypedNestedOptionalSubset()
     {
         var dst = Decoder.DecodeListWith(
-            "[{id,profile:{name,nick,score},active}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)",
-            MatrixUserNestedOptional.FromMap);
+            "[{id,profile@{name,nick,score},active}]:(1,(Alice,ally,9.5),true),(2,(Bob,,),false)",
+            MatrixUserNestedOptional.FromFields);
         Assert.Equal(2, dst.Count);
         Assert.Equal("ally", dst[0].Profile.Nick);
         Assert.Null(dst[1].Profile.Nick);
+    }
+
+    [Fact]
+    public void LegacyMapSyntaxIsRejected()
+    {
+        Assert.Throws<AsonException>(() => Decoder.Decode("{attrs}:(<age:30>)"));
     }
 }
 
@@ -341,7 +363,7 @@ public class RoundtripTests
     {
         var u = new User(42, "Bob", false);
         var s = Encoder.Encode(u);
-        var u2 = Decoder.DecodeWith(s, User.FromMap);
+        var u2 = Decoder.DecodeWith(s, User.FromFields);
         Assert.Equal(u, u2);
     }
 
@@ -350,7 +372,7 @@ public class RoundtripTests
     {
         var u = new User(42, "Bob", false);
         var s = Encoder.EncodeTyped(u);
-        var u2 = Decoder.DecodeWith(s, User.FromMap);
+        var u2 = Decoder.DecodeWith(s, User.FromFields);
         Assert.Equal(u, u2);
     }
 
@@ -359,7 +381,7 @@ public class RoundtripTests
     {
         var e = new Employee("Alice", new Dept("Eng"), true);
         var s = Encoder.Encode(e);
-        var e2 = Decoder.DecodeWith(s, Employee.FromMap);
+        var e2 = Decoder.DecodeWith(s, Employee.FromFields);
         Assert.Equal(e, e2);
     }
 }
@@ -374,7 +396,7 @@ public class BinaryTests
         var u2 = BinaryCodec.DecodeBinaryWith(bin,
             new[] { "id", "name", "active" },
             new[] { FieldType.Int, FieldType.String, FieldType.Bool },
-            User.FromMap);
+            User.FromFields);
         Assert.Equal(u, u2);
     }
 
@@ -386,7 +408,7 @@ public class BinaryTests
         var users2 = BinaryCodec.DecodeBinaryListWith(bin,
             new[] { "id", "name", "active" },
             new[] { FieldType.Int, FieldType.String, FieldType.Bool },
-            User.FromMap);
+            User.FromFields);
         Assert.Equal(2, users2.Count);
         Assert.Equal(users[0], users2[0]);
         Assert.Equal(users[1], users2[1]);
@@ -415,7 +437,7 @@ public class PrettyTests
     public void TypedSimple()
     {
         var u = new User(1, "Alice", true);
-        Assert.Equal("{id:int, name:str, active:bool}:(1, Alice, true)", PrettyPrinter.EncodePrettyTyped(u));
+        Assert.Equal("{id@int, name@str, active@bool}:(1, Alice, true)", PrettyPrinter.EncodePrettyTyped(u));
     }
 
     [Fact]
@@ -431,7 +453,7 @@ public class PrettyTests
     {
         var u = new User(1, "Alice", true);
         var p = PrettyPrinter.EncodePretty(u);
-        var u2 = Decoder.DecodeWith(p, User.FromMap);
+        var u2 = Decoder.DecodeWith(p, User.FromFields);
         Assert.Equal(u, u2);
     }
 }

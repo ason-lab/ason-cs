@@ -16,7 +16,7 @@ JSON (100 tokens):
 {"users":[{"id":1,"name":"Alice","active":true},{"id":2,"name":"Bob","active":false}]}
 
 ASON (~35 tokens, 65% saving):
-[{id:int, name:str, active:bool}]:(1,Alice,true),(2,Bob,false)
+[{id@int, name@str, active@bool}]:(1,Alice,true),(2,Bob,false)
 ```
 
 | Aspect              | JSON         | ASON             |
@@ -35,6 +35,7 @@ Add the Ason NuGet package:
 
 ```bash
 dotnet add package Ason
+```
 
 The published NuGet package ships a single package with assets for both `net8.0` and `net10.0`.
 
@@ -48,7 +49,6 @@ or:
 
 ```xml
 <TargetFramework>net10.0</TargetFramework>
-```
 ```
 
 ### Define a Schema Type
@@ -64,7 +64,7 @@ record User(long Id, string Name, bool Active) : IAsonSchema
     public ReadOnlySpan<string?> FieldTypes => _types;
     public object?[] FieldValues => [Id, Name, Active];
 
-    public static User FromMap(Dictionary<string, object?> m) =>
+    public static User FromFields(Dictionary<string, object?> m) =>
         new(Convert.ToInt64(m["id"]), (string)m["name"]!, Convert.ToBoolean(m["active"]));
 }
 ```
@@ -80,10 +80,10 @@ var s = Ason.Ason.encode(user);
 
 // Encode with type annotations
 var typed = Ason.Ason.encodeTyped(user);
-// => "{id:int,name:str,active:bool}:(1,Alice,true)"
+// => "{id@int,name@str,active@bool}:(1,Alice,true)"
 
 // Decode
-var u2 = Ason.Ason.decodeWith(s, User.FromMap);
+var u2 = Ason.Ason.decodeWith(s, User.FromFields);
 // u2 == user ✓
 ```
 
@@ -100,7 +100,7 @@ var users = new List<User> {
 var s = Ason.Ason.encode<User>(users);
 // => "[{id,name,active}]:(1,Alice,true),(2,Bob,false)"
 
-var users2 = Ason.Ason.decodeListWith(s, User.FromMap);
+var users2 = Ason.Ason.decodeListWith(s, User.FromFields);
 // users2.Count == 2 ✓
 ```
 
@@ -113,7 +113,7 @@ var bin = Ason.Ason.encodeBinary(user);
 var u3 = Ason.Ason.decodeBinaryWith(bin,
     new[] { "id", "name", "active" },
     new[] { FieldType.Int, FieldType.String, FieldType.Bool },
-    User.FromMap);
+    User.FromFields);
 ```
 
 ### Pretty Format
@@ -123,7 +123,7 @@ var pretty = Ason.Ason.encodePretty(user);
 // => "{id, name, active}:(1, Alice, true)"
 
 var prettyTyped = Ason.Ason.encodePrettyTyped(user);
-// => "{id:int, name:str, active:bool}:(1, Alice, true)"
+// => "{id@int, name@str, active@bool}:(1, Alice, true)"
 ```
 
 ## Supported Types
@@ -138,6 +138,13 @@ var prettyTyped = Ason.Ason.encodePrettyTyped(user);
 | List\<T\>      | `[v1,v2,v3]`             | `[rust,go,python]`       |
 | Nested struct  | `(field1,field2)`         | `(Engineering,500000)`   |
 
+Native `Dictionary<K,V>` / map fields are intentionally unsupported in the current ASON format.
+If you need keyed collections, model them explicitly as entry-list arrays such as:
+
+```text
+{attrs@[{key@str,value@int}]}:([(age,30),(score,95)])
+```
+
 ### Nested Structs
 
 ```csharp
@@ -145,14 +152,14 @@ record Dept(string Title) : IAsonSchema { /* ... */ }
 record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 
 // Schema reflects nesting:
-// {name:str,dept:{title:str}}:(Alice,(Engineering))
+// {name@str,dept@{title@str}}:(Alice,(Engineering))
 ```
 
 ### Optional Fields
 
 ```text
-// With value:   {id,label}:(1,hello)
-// With null:    {id,label}:(1,)
+// With value@{id,label}:(1,hello)
+// With null@{id,label}:(1,)
 ```
 
 ### Arrays
@@ -165,13 +172,13 @@ record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 
 ```text
 /* user list */
-[{id:int, name:str, active:bool}]:(1,Alice,true),(2,Bob,false)
+[{id@int, name@str, active@bool}]:(1,Alice,true),(2,Bob,false)
 ```
 
 ### Multiline Format
 
 ```text
-[{id:int, name:str, active:bool}]:
+[{id@int, name@str, active@bool}]:
   (1, Alice, true),
   (2, Bob, false),
   (3, "Carol Smith", true)
@@ -185,7 +192,7 @@ record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 | `Ason.encodeTyped(T)`          | Serialize struct → annotated schema                      |
 | `Ason.encode<T>(List<T>)`      | Serialize list → unannotated schema (written once)       |
 | `Ason.encodeTyped<T>(List<T>)` | Serialize list → annotated schema                        |
-| `Ason.decode(string)`          | Deserialize → Dictionary                                 |
+| `Ason.decode(string)`          | Deserialize → field bag (`Dictionary<string, object?>`)  |
 | `Ason.decodeWith<T>(s, fn)`    | Deserialize → typed T via factory                        |
 | `Ason.decodeListWith<T>(s, fn)`| Deserialize → List\<T\> via factory                      |
 | `Ason.encodeBinary(T)`         | Binary encode (zero-copy BinaryPrimitives)               |
@@ -193,21 +200,24 @@ record Employee(string Name, Dept Dept) : IAsonSchema { /* ... */ }
 | `Ason.encodePretty(T)`         | Pretty-format encode                                     |
 | `Ason.encodePrettyTyped(T)`    | Pretty-format with type annotations                      |
 
-## Latest Benchmarks
+## Benchmark Output
 
-Measured on this machine with:
+Run the bundled benchmark with:
 
 ```bash
 dotnet run --project examples/Bench/Ason.Examples.Bench.csproj -c Release
 ```
 
-Headline numbers:
+Headline numbers::
 
-- Flat 1,000-record dataset: ASON text serialize `329.84ms` vs JSON `842.31ms`, deserialize `298.01ms` vs JSON `841.81ms`
-- Flat 10,000-record dataset: ASON text serialize `117.54ms` vs JSON `280.08ms`, deserialize `513.51ms` vs JSON `741.79ms`
-- Deep 100-record company dataset: ASON text serialize `293.55ms` vs JSON `1253.94ms`, deserialize `1094.74ms` vs JSON `2535.20ms`
-- Size summary for 1,000 flat records: JSON `121,675 B`, ASON text `56,718 B` (`53%` smaller), ASON binary `74,454 B` (`39%` smaller)
-- ASON binary was the fastest serialization path in this run: `94.51ms` for flat 1,000 records vs JSON `842.31ms`
+```text
+  Flat struct × 500 (8 fields, vec)
+    Serialize:   JSON 16.22ms/60784B | ASON 10.11ms(1.6x)/28327B(46.6%) | BIN 4.92ms(3.3x)/37230B(61.2%)
+    Deserialize: JSON    22.09ms | ASON     5.70ms(3.9x) | BIN     2.11ms(10.5x)
+```
+
+
+Actual timings vary by runtime, CPU, and whether you run `Debug` or `Release`.
 
 ## Why ASON Performs Well
 
@@ -261,10 +271,10 @@ See the full [ASON Spec](https://github.com/ason-lab/ason/blob/main/docs/ASON_SP
 
 | Element       | Schema                      | Data                |
 | ------------- | --------------------------- | ------------------- |
-| Object        | `{field1:type,field2:type}` | `(val1,val2)`       |
-| Array         | `field:[type]`              | `[v1,v2,v3]`        |
-| Object array  | `field:[{f1:type,f2:type}]` | `[(v1,v2),(v3,v4)]` |
-| Nested object | `field:{f1:type,f2:type}`   | `(v1,(v3,v4))`      |
+| Object        | `{field1@type,field2@type}` | `(val1,val2)`       |
+| Array         | `field@[type]`              | `[v1,v2,v3]`        |
+| Object array  | `field@[{f1@type,f2@type}]` | `[(v1,v2),(v3,v4)]` |
+| Nested object | `field@{f1@type,f2@type}`   | `(v1,(v3,v4))`      |
 | Null          | —                           | _(blank)_           |
 | Empty string  | —                           | `""`                |
 | Comment       | —                           | `/* ... */`         |

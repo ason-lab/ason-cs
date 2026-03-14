@@ -48,10 +48,10 @@ internal static class SimdHelper
     }
 
     /// <summary>
-    /// Fast scan for schema delimiter: , } : space tab
+    /// Fast scan for schema delimiter: , } @ space tab
     /// </summary>
     private static readonly SearchValues<char> s_schemaDelimiters =
-        SearchValues.Create(",}:\t ");
+        SearchValues.Create(",}@\t ");
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int IndexOfSchemaDelimiter(ReadOnlySpan<char> s)
