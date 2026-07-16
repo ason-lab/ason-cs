@@ -7,7 +7,8 @@ namespace Asun;
 
 /// <summary>
 /// ASUN binary codec. Zero-copy decoding from ReadOnlySpan&lt;byte&gt;.
-/// Wire: bool=1B, int=8B LE, double=8B LE, string=u32LE len+UTF8, list=u32LE count+elements.
+/// Wire (LEB128 varint; matches the Rust reference): bool=1B, int=zigzag+LEB128 varint,
+/// double=8B LE, string=uvarint len+UTF8, list=uvarint count+elements.
 /// </summary>
 public static class BinaryCodec
 {
@@ -21,7 +22,7 @@ public static class BinaryCodec
     public static byte[] EncodeBinary<T>(IReadOnlyList<T> values) where T : IAsunSchema
     {
         var w = new BinWriter(values.Count * 64 + 32);
-        w.WriteU32((uint)values.Count);
+        w.WriteUvarint((ulong)values.Count);
         for (int i = 0; i < values.Count; i++)
             values[i].WriteBinaryValues(ref w);
         return w.ToArray();
@@ -46,13 +47,13 @@ public static class BinaryCodec
             case System.Collections.IList list:
                 if (list.Count > 0 && list[0] is IAsunSchema)
                 {
-                    w.WriteU32((uint)list.Count);
+                    w.WriteUvarint((ulong)list.Count);
                     for (int i = 0; i < list.Count; i++)
                         ((IAsunSchema)list[i]!).WriteBinaryValues(ref w);
                 }
                 else
                 {
-                    w.WriteU32((uint)list.Count);
+                    w.WriteUvarint((ulong)list.Count);
                     for (int i = 0; i < list.Count; i++)
                         WriteBinaryValue(ref w, list[i]);
                 }
@@ -81,9 +82,9 @@ public static class BinaryCodec
         Func<Dictionary<string, object?>, T> factory)
     {
         var r = new BinReader(data);
-        uint count = r.ReadU32();
+        ulong count = r.ReadUvarint();
         var result = new List<T>((int)count);
-        for (uint c = 0; c < count; c++)
+        for (ulong c = 0; c < count; c++)
         {
             var map = new Dictionary<string, object?>(fields.Length);
             for (int i = 0; i < fields.Length; i++)
@@ -123,20 +124,25 @@ public struct BinWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteU8(byte v) { EnsureCapacity(1); _buf[_pos++] = v; }
 
+    /// LEB128 unsigned varint.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void WriteU32(uint v)
+    public void WriteUvarint(ulong v)
     {
-        EnsureCapacity(4);
-        BinaryPrimitives.WriteUInt32LittleEndian(_buf.AsSpan(_pos), v);
-        _pos += 4;
+        EnsureCapacity(10);
+        while (v >= 0x80)
+        {
+            _buf[_pos++] = (byte)((v & 0x7F) | 0x80);
+            v >>= 7;
+        }
+        _buf[_pos++] = (byte)v;
     }
 
+    /// zigzag + LEB128 signed varint.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteI64(long v)
     {
-        EnsureCapacity(8);
-        BinaryPrimitives.WriteInt64LittleEndian(_buf.AsSpan(_pos), v);
-        _pos += 8;
+        ulong zz = (ulong)((v << 1) ^ (v >> 63));
+        WriteUvarint(zz);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -153,10 +159,12 @@ public struct BinWriter
     public void WriteString(ReadOnlySpan<char> s)
     {
         int maxBytes = Encoding.UTF8.GetMaxByteCount(s.Length);
-        EnsureCapacity(4 + maxBytes);
-        int written = Encoding.UTF8.GetBytes(s, _buf.AsSpan(_pos + 4));
-        BinaryPrimitives.WriteUInt32LittleEndian(_buf.AsSpan(_pos), (uint)written);
-        _pos += 4 + written;
+        // uvarint length prefix is at most 5 bytes for a 32-bit byte count.
+        EnsureCapacity(5 + maxBytes);
+        int byteCount = Encoding.UTF8.GetByteCount(s);
+        WriteUvarint((ulong)byteCount);
+        int written = Encoding.UTF8.GetBytes(s, _buf.AsSpan(_pos));
+        _pos += written;
     }
 
     public byte[] ToArray()
@@ -180,11 +188,29 @@ internal ref struct BinReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte ReadU8() { Ensure(1); return _data[_pos++]; }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public uint ReadU32() { Ensure(4); uint v = BinaryPrimitives.ReadUInt32LittleEndian(_data[_pos..]); _pos += 4; return v; }
+    /// LEB128 unsigned varint.
+    public ulong ReadUvarint()
+    {
+        ulong result = 0;
+        int shift = 0;
+        while (true)
+        {
+            if (_pos >= _data.Length) throw AsunException.Eof;
+            byte b = _data[_pos++];
+            if (shift >= 64) throw new AsunException("binary decode: varint overflow");
+            result |= (ulong)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) return result;
+            shift += 7;
+        }
+    }
 
+    /// zigzag + LEB128 signed varint.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public long ReadI64() { Ensure(8); long v = BinaryPrimitives.ReadInt64LittleEndian(_data[_pos..]); _pos += 8; return v; }
+    public long ReadI64()
+    {
+        ulong v = ReadUvarint();
+        return (long)(v >> 1) ^ -(long)(v & 1);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double ReadF64() { Ensure(8); double v = BinaryPrimitives.ReadDoubleLittleEndian(_data[_pos..]); _pos += 8; return v; }
@@ -194,7 +220,7 @@ internal ref struct BinReader
 
     public string ReadString()
     {
-        uint len = ReadU32();
+        ulong len = ReadUvarint();
         Ensure((int)len);
         string result = Encoding.UTF8.GetString(_data.Slice(_pos, (int)len));
         _pos += (int)len;
@@ -215,30 +241,30 @@ internal ref struct BinReader
             case FieldType.OptionalBool: return ReadU8() == 0 ? null : (object)ReadBool();
             case FieldType.ListInt:
             {
-                uint count = ReadU32();
+                ulong count = ReadUvarint();
                 var list = new List<object>((int)count);
-                for (uint i = 0; i < count; i++) list.Add(ReadI64());
+                for (ulong i = 0; i < count; i++) list.Add(ReadI64());
                 return list;
             }
             case FieldType.ListDouble:
             {
-                uint count = ReadU32();
+                ulong count = ReadUvarint();
                 var list = new List<object>((int)count);
-                for (uint i = 0; i < count; i++) list.Add(ReadF64());
+                for (ulong i = 0; i < count; i++) list.Add(ReadF64());
                 return list;
             }
             case FieldType.ListString:
             {
-                uint count = ReadU32();
+                ulong count = ReadUvarint();
                 var list = new List<object>((int)count);
-                for (uint i = 0; i < count; i++) list.Add(ReadString());
+                for (ulong i = 0; i < count; i++) list.Add(ReadString());
                 return list;
             }
             case FieldType.ListBool:
             {
-                uint count = ReadU32();
+                ulong count = ReadUvarint();
                 var list = new List<object>((int)count);
-                for (uint i = 0; i < count; i++) list.Add(ReadBool());
+                for (ulong i = 0; i < count; i++) list.Add(ReadBool());
                 return list;
             }
             default: throw new AsunException($"unknown field type: {type}");

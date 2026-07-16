@@ -522,16 +522,16 @@ internal static class Program
             if (Note is not null) { bw.WriteU8(1); bw.WriteString(Note); } else bw.WriteU8(0);
             if (FlagOpt.HasValue) { bw.WriteU8(1); bw.WriteBool(FlagOpt.Value); } else bw.WriteU8(0);
 
-            bw.WriteU32((uint)VecInt.Count);
+            bw.WriteUvarint((ulong)VecInt.Count);
             foreach (var v in VecInt) bw.WriteI64(v);
 
-            bw.WriteU32((uint)VecFloat.Count);
+            bw.WriteUvarint((ulong)VecFloat.Count);
             foreach (var v in VecFloat) bw.WriteF64(v);
 
-            bw.WriteU32((uint)VecStr.Count);
+            bw.WriteUvarint((ulong)VecStr.Count);
             foreach (var v in VecStr) bw.WriteString(v);
 
-            bw.WriteU32((uint)VecBool.Count);
+            bw.WriteUvarint((ulong)VecBool.Count);
             foreach (var v in VecBool) bw.WriteBool(v);
         }
 
@@ -673,9 +673,9 @@ internal static class Program
         public static List<BCompany> DecodeCompanyListBinary(byte[] data)
         {
             var reader = new BenchBinReader(data);
-            var count = reader.ReadU32();
+            var count = reader.ReadUvarint();
             var result = new List<BCompany>((int)count);
-            for (uint i = 0; i < count; i++) result.Add(ReadCompany(ref reader));
+            for (ulong i = 0; i < count; i++) result.Add(ReadCompany(ref reader));
             return result;
         }
 
@@ -686,13 +686,13 @@ internal static class Program
             var revenueM = reader.ReadF64();
             var isPublic = reader.ReadBool();
 
-            var divisionCount = reader.ReadU32();
+            var divisionCount = reader.ReadUvarint();
             var divisions = new List<BDivision>((int)divisionCount);
-            for (uint i = 0; i < divisionCount; i++) divisions.Add(ReadDivision(ref reader));
+            for (ulong i = 0; i < divisionCount; i++) divisions.Add(ReadDivision(ref reader));
 
-            var tagCount = reader.ReadU32();
+            var tagCount = reader.ReadUvarint();
             var tags = new List<string>((int)tagCount);
-            for (uint i = 0; i < tagCount; i++) tags.Add(reader.ReadString());
+            for (ulong i = 0; i < tagCount; i++) tags.Add(reader.ReadString());
 
             return new BCompany(name, founded, revenueM, isPublic, divisions, tags);
         }
@@ -703,9 +703,9 @@ internal static class Program
             var location = reader.ReadString();
             var headcount = reader.ReadI64();
 
-            var teamCount = reader.ReadU32();
+            var teamCount = reader.ReadUvarint();
             var teams = new List<BTeam>((int)teamCount);
-            for (uint i = 0; i < teamCount; i++) teams.Add(ReadTeam(ref reader));
+            for (ulong i = 0; i < teamCount; i++) teams.Add(ReadTeam(ref reader));
 
             return new BDivision(name, location, headcount, teams);
         }
@@ -716,9 +716,9 @@ internal static class Program
             var lead = reader.ReadString();
             var size = reader.ReadI64();
 
-            var projectCount = reader.ReadU32();
+            var projectCount = reader.ReadUvarint();
             var projects = new List<BProject>((int)projectCount);
-            for (uint i = 0; i < projectCount; i++) projects.Add(ReadProject(ref reader));
+            for (ulong i = 0; i < projectCount; i++) projects.Add(ReadProject(ref reader));
 
             return new BTeam(name, lead, size, projects);
         }
@@ -729,9 +729,9 @@ internal static class Program
             var budget = reader.ReadF64();
             var active = reader.ReadBool();
 
-            var taskCount = reader.ReadU32();
+            var taskCount = reader.ReadUvarint();
             var tasks = new List<BTask>((int)taskCount);
-            for (uint i = 0; i < taskCount; i++) tasks.Add(ReadTask(ref reader));
+            for (ulong i = 0; i < taskCount; i++) tasks.Add(ReadTask(ref reader));
 
             return new BProject(name, budget, active, tasks);
         }
@@ -750,18 +750,23 @@ internal static class Program
                 _pos = 0;
             }
 
-            public uint ReadU32()
+            public ulong ReadUvarint()
             {
-                var value = BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(_pos, 4));
-                _pos += 4;
-                return value;
+                ulong result = 0;
+                int shift = 0;
+                while (true)
+                {
+                    byte b = _data[_pos++];
+                    result |= (ulong)(b & 0x7F) << shift;
+                    if ((b & 0x80) == 0) return result;
+                    shift += 7;
+                }
             }
 
             public long ReadI64()
             {
-                var value = BinaryPrimitives.ReadInt64LittleEndian(_data.Slice(_pos, 8));
-                _pos += 8;
-                return value;
+                ulong v = ReadUvarint();
+                return (long)(v >> 1) ^ -(long)(v & 1);
             }
 
             public double ReadF64()
@@ -775,7 +780,7 @@ internal static class Program
 
             public string ReadString()
             {
-                var len = (int)ReadU32();
+                var len = (int)ReadUvarint();
                 var value = Encoding.UTF8.GetString(_data.Slice(_pos, len));
                 _pos += len;
                 return value;
