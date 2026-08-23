@@ -129,6 +129,10 @@ public sealed class AsunValue : IEquatable<AsunValue>
 /// </summary>
 public static class AsunValueCodec
 {
+    // Bounds recursion in the untyped decoder so deeply nested payloads raise an
+    // error instead of overflowing the CLR stack (P0-2).
+    private const int MaxDepth = 128;
+
     // ----- Encoder ---------------------------------------------------------
 
     public static string Encode(AsunValue value)
@@ -177,7 +181,7 @@ public static class AsunValueCodec
         }
         else if (c == '[')
         {
-            v = ParseArray(input, ref pos);
+            v = ParseArray(input, ref pos, 0);
         }
         else if (c == '"')
         {
@@ -220,8 +224,9 @@ public static class AsunValueCodec
         }
     }
 
-    private static AsunValue ParseArray(ReadOnlySpan<char> s, ref int pos)
+    private static AsunValue ParseArray(ReadOnlySpan<char> s, ref int pos, int depth)
     {
+        if (depth > MaxDepth) throw AsunException.MaxDepthExceeded;
         pos++; // skip [
         var items = new List<AsunValue>();
         bool first = true;
@@ -245,17 +250,17 @@ public static class AsunValueCodec
                 items.Add(AsunValue.Null);
                 continue;
             }
-            items.Add(ParseValueInner(s, ref pos));
+            items.Add(ParseValueInner(s, ref pos, depth));
         }
         return AsunValue.Of(items);
     }
 
-    private static AsunValue ParseValueInner(ReadOnlySpan<char> s, ref int pos)
+    private static AsunValue ParseValueInner(ReadOnlySpan<char> s, ref int pos, int depth)
     {
         SkipWsStrict(s, ref pos);
         if (pos >= s.Length) return AsunValue.Null;
         char c = s[pos];
-        if (c == '[') return ParseArray(s, ref pos);
+        if (c == '[') return ParseArray(s, ref pos, depth + 1);
         if (c == '"') return AsunValue.Of(ParseQuoted(s, ref pos));
         if (c == '(')
         {
@@ -405,19 +410,59 @@ public static class AsunValueCodec
                     case '@': sb.Append('@'); j++; continue;
                     case ':': sb.Append(':'); j++; continue;
                     case 'u':
-                        if (j + 5 < tok.Length)
-                        {
-                            int cp = int.Parse(tok.Slice(j + 2, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-                            sb.Append((char)cp);
-                            j += 5;
-                            continue;
-                        }
-                        break;
+                    {
+                        // tok[j]=='\\', tok[j+1]=='u'; hex starts at j+2.
+                        int p = j + 2;
+                        AppendUnicodeEscape(tok, ref p, sb);
+                        j = p - 1; // for-loop's j++ advances past the last consumed char
+                        continue;
+                    }
                 }
             }
             sb.Append(c);
         }
         return sb.ToString();
+    }
+
+    // Read exactly four hex digits at absolute offset `at` in `s`. Rejects short
+    // input and non-hex chars (int.Parse would accept '+', spaces, etc.).
+    private static int Hex4(ReadOnlySpan<char> s, int at)
+    {
+        if (at + 4 > s.Length) throw AsunException.InvalidUnicodeEscape;
+        int v = 0;
+        for (int k = 0; k < 4; k++)
+        {
+            char c = s[at + k];
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else throw AsunException.InvalidUnicodeEscape;
+            v = (v << 4) | d;
+        }
+        return v;
+    }
+
+    // Handle a \uXXXX escape (pos points just past the 'u'). Combines a valid
+    // high+low surrogate pair into one code point; rejects lone/unpaired
+    // surrogates and bad hex rather than emitting a broken char (P2-7).
+    private static void AppendUnicodeEscape(ReadOnlySpan<char> s, ref int pos, StringBuilder sb)
+    {
+        int hi = Hex4(s, pos);
+        pos += 4;
+        if (hi >= 0xD800 && hi <= 0xDBFF)
+        {
+            if (pos + 6 > s.Length || s[pos] != '\\' || s[pos + 1] != 'u')
+                throw AsunException.InvalidUnicodeEscape;
+            int lo = Hex4(s, pos + 2);
+            if (lo < 0xDC00 || lo > 0xDFFF) throw AsunException.InvalidUnicodeEscape;
+            pos += 6;
+            int cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
+            sb.Append(char.ConvertFromUtf32(cp));
+            return;
+        }
+        if (hi >= 0xDC00 && hi <= 0xDFFF) throw AsunException.InvalidUnicodeEscape;
+        sb.Append((char)hi);
     }
 
     private static string ParseQuoted(ReadOnlySpan<char> s, ref int pos)
@@ -466,10 +511,7 @@ public static class AsunValueCodec
                     case '@':  sb.Append('@'); break;
                     case ':':  sb.Append(':'); break;
                     case 'u':
-                        if (pos + 4 > s.Length) throw AsunException.InvalidUnicodeEscape;
-                        int cp = int.Parse(s.Slice(pos, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-                        sb.Append((char)cp);
-                        pos += 4;
+                        AppendUnicodeEscape(s, ref pos, sb);
                         break;
                     default: throw new AsunException($"invalid escape: \\{esc}");
                 }

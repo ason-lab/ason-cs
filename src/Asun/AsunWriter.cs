@@ -71,44 +71,26 @@ public struct AsunWriter : IDisposable
 
     public void WriteDouble(double v)
     {
+        // Preserve the sign of negative zero, which the integer fast-path below
+        // would otherwise flatten to "0.0" (P1-4).
+        if (v == 0.0 && double.IsNegative(v))
+        {
+            WriteSpan("-0.0");
+            return;
+        }
+        // Whole finite values render as "<int>.0". The prior x10/x100 fast-paths
+        // produced non-shortest / non-round-tripping output for values such as
+        // 0.1 or 2.675, so everything else goes through the round-trip formatter.
         if (double.IsFinite(v) && v == Math.Truncate(v) && Math.Abs(v) < 1e16)
         {
             WriteInt((long)v);
             WriteSpan(".0");
             return;
         }
-        if (double.IsFinite(v))
-        {
-            double v10 = v * 10;
-            if (v10 == Math.Truncate(v10) && Math.Abs(v10) < 1e15)
-            {
-                long vi = (long)v10;
-                long intPart = Math.Abs(vi) / 10;
-                long frac = Math.Abs(vi) % 10;
-                if (vi < 0) WriteChar('-');
-                WriteInt(intPart);
-                WriteChar('.');
-                WriteChar((char)('0' + frac));
-                return;
-            }
-            double v100 = v * 100;
-            if (v100 == Math.Truncate(v100) && Math.Abs(v100) < 1e15)
-            {
-                long vi = (long)v100;
-                long intPart = Math.Abs(vi) / 100;
-                long frac = Math.Abs(vi) % 100;
-                if (vi < 0) WriteChar('-');
-                WriteInt(intPart);
-                WriteChar('.');
-                long d1 = frac / 10;
-                long d2 = frac % 10;
-                WriteChar((char)('0' + d1));
-                if (d2 != 0) WriteChar((char)('0' + d2));
-                return;
-            }
-        }
+        // "R" (round-trip) yields the shortest string that parses back to the
+        // exact same double.
         Span<char> tmp = stackalloc char[32];
-        v.TryFormat(tmp, out int written);
+        v.TryFormat(tmp, out int written, "R", System.Globalization.CultureInfo.InvariantCulture);
         EnsureCapacity(written);
         tmp[..written].CopyTo(_buf.AsSpan(_pos));
         _pos += written;

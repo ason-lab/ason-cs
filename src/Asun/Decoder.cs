@@ -9,8 +9,20 @@ namespace Asun;
 /// </summary>
 public static class Decoder
 {
-    // Cache parsed schema field names to avoid re-parsing identical schema headers
-    private static readonly ConcurrentDictionary<int, string[]> _schemaCache = new();
+    // Cache parsed schema field names to avoid re-parsing identical schema headers.
+    // Keyed by the exact schema header substring (not a hash) so distinct headers
+    // that happen to collide cannot poison one another's cached fields (P0-1).
+    private const int MaxCachedSchemas = 512;
+    private static readonly ConcurrentDictionary<string, string[]> _schemaCache = new();
+
+    // Bound the cache so an attacker feeding endless distinct schemas cannot grow
+    // it without limit (P1-6): once full, drop everything and start fresh.
+    internal static void CacheSchema(string key, string[] fields)
+    {
+        if (_schemaCache.Count >= MaxCachedSchemas)
+            _schemaCache.Clear();
+        _schemaCache.TryAdd(key, fields);
+    }
 
     /// <summary>Decode ASUN text into a field bag (Dictionary&lt;string, object?&gt;).</summary>
     public static Dictionary<string, object?> Decode(ReadOnlySpan<char> input)
@@ -57,18 +69,33 @@ public static class Decoder
 /// <summary>Internal decoder state — ref struct for zero-alloc stack usage.</summary>
 internal ref struct AsunDecoder
 {
+    // Maximum structural nesting depth. Bounds recursion so deeply nested,
+    // untrusted payloads raise an error instead of overflowing the CLR stack (P0-2).
+    private const int MaxDepth = 128;
+
     private readonly ReadOnlySpan<char> _input;
-    private readonly ConcurrentDictionary<int, string[]>? _schemaCache;
+    private readonly ConcurrentDictionary<string, string[]>? _schemaCache;
     internal readonly int Len;
     internal int Pos;
+    private int _depth;
 
-    public AsunDecoder(ReadOnlySpan<char> input, ConcurrentDictionary<int, string[]>? schemaCache = null)
+    public AsunDecoder(ReadOnlySpan<char> input, ConcurrentDictionary<string, string[]>? schemaCache = null)
     {
         _input = input;
         _schemaCache = schemaCache;
         Len = input.Length;
         Pos = 0;
+        _depth = 0;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnterDepth()
+    {
+        if (++_depth > MaxDepth) throw AsunException.MaxDepthExceeded;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ExitDepth() => _depth--;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private char Peek() => Pos < Len ? _input[Pos] : '\0';
@@ -112,24 +139,41 @@ internal ref struct AsunDecoder
     // Schema parsing with caching
     internal string[] ParseSchema()
     {
+        EnterDepth();
+        try { return ParseSchemaInner(); }
+        finally { ExitDepth(); }
+    }
+
+    private string[] ParseSchemaInner()
+    {
         int schemaStart = Pos;
         if (Next() != '{') throw AsunException.ExpectedOpenBrace;
 
-        // Try cache lookup: find end of schema header first
+        // Try cache lookup: find end of schema header first. The scan must be
+        // quote/escape-aware so a '}' inside a quoted field name does not end the
+        // header early and let two different schemas share a cache slot (P0-1).
         int braceDepth = 1;
         int scanPos = Pos;
+        bool inString = false;
         while (scanPos < Len && braceDepth > 0)
         {
             char c = _input[scanPos];
-            if (c == '{') braceDepth++;
+            if (inString)
+            {
+                if (c == '\\') scanPos++; // skip escaped char
+                else if (c == '"') inString = false;
+            }
+            else if (c == '"') inString = true;
+            else if (c == '{') braceDepth++;
             else if (c == '}') braceDepth--;
             scanPos++;
         }
         // scanPos now points right after the closing '}'
         int schemaEnd = scanPos;
-        int hash = string.GetHashCode(_input[schemaStart..schemaEnd]);
+        // Key on the exact header text; equality on the key is the poison check.
+        string key = _input[schemaStart..schemaEnd].ToString();
 
-        if (_schemaCache != null && _schemaCache.TryGetValue(hash, out var cached))
+        if (_schemaCache != null && _schemaCache.TryGetValue(key, out var cached))
         {
             // Skip past the schema we already parsed
             Pos = schemaEnd;
@@ -168,7 +212,7 @@ internal ref struct AsunDecoder
             fields.Add(name);
         }
         var result = fields.ToArray();
-        _schemaCache?.TryAdd(hash, result);
+        if (_schemaCache != null) Decoder.CacheSchema(key, result);
         return result;
     }
 
@@ -236,6 +280,13 @@ internal ref struct AsunDecoder
 
     // Struct parsing
     internal Dictionary<string, object?> ParseSingleStruct()
+    {
+        EnterDepth();
+        try { return ParseSingleStructInner(); }
+        finally { ExitDepth(); }
+    }
+
+    private Dictionary<string, object?> ParseSingleStructInner()
     {
         SkipWsAndComments();
         if (Pos < Len && _input[Pos] == '[' && Pos + 1 < Len && _input[Pos + 1] == '{')
@@ -440,13 +491,16 @@ internal ref struct AsunDecoder
         int start = Pos;
         bool negative = false;
         if (_input[Pos] == '-') { negative = true; Pos++; }
+        // Accumulate as a negative magnitude so the full 64-bit range, including
+        // long.MinValue, is representable and overflow is detected (P1-5).
         long intVal = 0;
         int digits = 0;
         while (Pos < Len)
         {
             int d = _input[Pos] - '0';
             if ((uint)d > 9) break;
-            intVal = intVal * 10 + d;
+            if (intVal < (long.MinValue + d) / 10) throw AsunException.IntegerOutOfRange;
+            intVal = intVal * 10 - d;
             Pos++;
             digits++;
         }
@@ -461,7 +515,9 @@ internal ref struct AsunDecoder
             Pos = start;
             return ParseFloat();
         }
-        return negative ? -intVal : intVal;
+        if (negative) return intVal;
+        if (intVal == long.MinValue) throw AsunException.IntegerOutOfRange;
+        return -intVal;
     }
 
     private double ParseFloat()
@@ -526,10 +582,7 @@ internal ref struct AsunDecoder
                     case '[': buf.AppendLiteral("["); break;
                     case ']': buf.AppendLiteral("]"); break;
                     case 'u':
-                        if (Pos + 4 > Len) throw AsunException.InvalidUnicodeEscape;
-                        int cp = int.Parse(_input.Slice(Pos, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-                        buf.AppendFormatted((char)cp);
-                        Pos += 4;
+                        AppendUnicodeEscape(ref buf);
                         break;
                     default: throw new AsunException($"invalid escape: \\{esc}");
                 }
@@ -537,6 +590,47 @@ internal ref struct AsunDecoder
             else { buf.AppendFormatted(ch); Pos++; }
         }
         throw AsunException.UnclosedString;
+    }
+
+    // Read exactly four hex digits at absolute offset `at`. Rejects short input
+    // and any non-hex character (int.Parse would otherwise accept '+'/'-'/spaces).
+    private int Hex4(int at)
+    {
+        if (at + 4 > Len) throw AsunException.InvalidUnicodeEscape;
+        int v = 0;
+        for (int k = 0; k < 4; k++)
+        {
+            char c = _input[at + k];
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else throw AsunException.InvalidUnicodeEscape;
+            v = (v << 4) | d;
+        }
+        return v;
+    }
+
+    // Handle a \uXXXX escape (Pos points just past the 'u'). Combines a valid
+    // high+low surrogate pair into one code point and rejects lone/unpaired
+    // surrogates and bad hex, rather than emitting a broken char (P2-7).
+    private void AppendUnicodeEscape(ref DefaultInterpolatedStringHandler buf)
+    {
+        int hi = Hex4(Pos);
+        Pos += 4;
+        if (hi >= 0xD800 && hi <= 0xDBFF)
+        {
+            if (Pos + 6 > Len || _input[Pos] != '\\' || _input[Pos + 1] != 'u')
+                throw AsunException.InvalidUnicodeEscape;
+            int lo = Hex4(Pos + 2);
+            if (lo < 0xDC00 || lo > 0xDFFF) throw AsunException.InvalidUnicodeEscape;
+            Pos += 6;
+            int cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
+            buf.AppendFormatted(char.ConvertFromUtf32(cp));
+            return;
+        }
+        if (hi >= 0xDC00 && hi <= 0xDFFF) throw AsunException.InvalidUnicodeEscape;
+        buf.AppendFormatted((char)hi);
     }
 
     private string ParsePlainValue()
@@ -583,6 +677,13 @@ internal ref struct AsunDecoder
 
     private List<object?> ParseArray()
     {
+        EnterDepth();
+        try { return ParseArrayInner(); }
+        finally { ExitDepth(); }
+    }
+
+    private List<object?> ParseArrayInner()
+    {
         Pos++; // skip [
         SkipWs();
         if (Pos < Len && _input[Pos] == ']') { Pos++; return []; }
@@ -612,6 +713,13 @@ internal ref struct AsunDecoder
     }
 
     private List<object?> ParseTupleValue()
+    {
+        EnterDepth();
+        try { return ParseTupleValueInner(); }
+        finally { ExitDepth(); }
+    }
+
+    private List<object?> ParseTupleValueInner()
     {
         Pos++; // skip (
         var items = new List<object?>();

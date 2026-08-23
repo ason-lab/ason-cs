@@ -20,4 +20,6 @@ public sealed class AsunException : Exception
     public static AsunException UnclosedString => new("unclosed string");
     public static AsunException InvalidUnicodeEscape => new("invalid unicode escape");
     public static AsunException UnsupportedMap => new("map syntax is not supported");
+    public static AsunException MaxDepthExceeded => new("maximum nesting depth exceeded");
+    public static AsunException IntegerOutOfRange => new("integer out of range");
 }
